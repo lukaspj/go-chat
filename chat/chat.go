@@ -6,6 +6,7 @@ import (
 	"net/rpc"
 	"net"
 	"net/http"
+	"net/url"
 )
 
 type Client struct {
@@ -37,10 +38,11 @@ func NewChatClient(port1, port2 int) (client *Client) {
 }
 
 func (client *Client) Call(contact chord.ContactInfo, method string, args, reply interface{}) (err error) {
-	addr := string(contact.Payload)
-	logger.Info("%s -> %s", method, addr)
+	href := url.URL{}
+	href.UnmarshalBinary(contact.Payload) // TODO handle err
+	logger.Info("%s -> %s", method, href.String())
 	var rpcClient *rpc.Client
-	if rpcClient, err = rpc.DialHTTP("tcp", addr); err == nil {
+	if rpcClient, err = rpc.DialHTTP("tcp", href.Host); err == nil {
 		err = rpcClient.Call(method, args, reply)
 		rpcClient.Close()
 	}

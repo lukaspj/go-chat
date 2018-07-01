@@ -1,6 +1,9 @@
 package chat
 
-import "github.com/lukaspj/go-chord/chord"
+import (
+	"github.com/lukaspj/go-chord/chord"
+	"net/url"
+)
 
 type ClientApi struct {
 	client *Client
@@ -22,7 +25,9 @@ type SendMessageResponse struct {
 
 func (pw *ClientApi) SendMessage(args *SendMessageRequest, response *SendMessageResponse) (err error) {
 	if err = pw.client.HandleRPC(&args.RPCHeader, &response.RPCHeader); err == nil {
-		logger.Info("At %s: Message %s from %s\n", string(pw.client.info.Payload), args.Message, string(args.Owner.Payload))
+		href := url.URL{}
+		err = href.UnmarshalBinary(args.Owner.Payload) // TODO handle err
+		logger.Info("At %s: Message %s from %s\n", string(pw.client.info.Payload), args.Message, href.String())
 		if !args.Owner.Id.Equals(pw.client.info.Id) {
 			pw.client.inbox <- args.Message
 			succ := pw.client.peer.GetSuccessor()
