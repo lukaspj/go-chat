@@ -1,4 +1,4 @@
-package chat
+package main
 
 import (
 	"math/rand"
@@ -24,7 +24,7 @@ func main() {
 
 	flag.Parse()
 
-	logger.SetLevel(logging.INFO)
+	logger.SetLevel(logging.DEBUG)
 	logger.AddLogOutput(logging.GetFileOutput(fmt.Sprintf("chat_%v_log.log", *port1)))
 	logger.Info("Logging initialized")
 
@@ -51,7 +51,7 @@ func main() {
 					break
 				}
 			} else {
-				chatClient.SendMessage(input)
+				chatClient.QueueMessage(input)
 			}
 		}
 	}()

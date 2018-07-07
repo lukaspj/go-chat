@@ -3,10 +3,11 @@ package chat
 import (
 	"fmt"
 	"github.com/lukaspj/go-chord/chord"
-	"net/rpc"
 	"net"
-	"net/http"
 	"net/url"
+	"context"
+	"github.com/lukaspj/go-chat/api"
+	"google.golang.org/grpc"
 )
 
 type Client struct {
@@ -21,12 +22,20 @@ type Client struct {
 
 func NewChatClient(port1, port2 int) (client *Client) {
 	client = new(Client)
+	chatUrlStr := fmt.Sprintf("http://127.0.0.1:%d", port2)
+	chatUrl, err := url.Parse(chatUrlStr)
+	if err != nil {
+		panic(fmt.Sprintf("Unable to parse chatUrl: %s: %v", chatUrlStr, err))
+	}
+
+	payload, err := chatUrl.MarshalBinary()
+
 	client.info = chord.ContactInfo{
 		Address: fmt.Sprintf("127.0.0.1:%d", port1),
 		Id:      chord.NewNodeIDFromHash(fmt.Sprintf("127.0.0.1:%d", port2)),
-		Payload: []byte(fmt.Sprintf("127.0.0.1:%d", port2)),
+		Payload: payload,
 	}
-	client.peer = chord.NewPeer(client.info, port1)
+	client.peer = chord.NewPeer(&client.info, port1)
 	client.msgPort = port2
 
 	client.inbox = make(chan string, 15)
@@ -37,43 +46,12 @@ func NewChatClient(port1, port2 int) (client *Client) {
 	return
 }
 
-func (client *Client) Call(contact chord.ContactInfo, method string, args, reply interface{}) (err error) {
-	href := url.URL{}
-	href.UnmarshalBinary(contact.Payload) // TODO handle err
-	logger.Info("%s -> %s", method, href.String())
-	var rpcClient *rpc.Client
-	if rpcClient, err = rpc.DialHTTP("tcp", href.Host); err == nil {
-		err = rpcClient.Call(method, args, reply)
-		rpcClient.Close()
-	}
-	return
-}
-
-func (client *Client) HandleRPC(request *RPCHeader, response *RPCHeader) error {
-	// TODO handle standard headers
-	/*if !request.ReceiverId.IsZero() && !request.ReceiverId.Equals(peer.Info.Id) {
-		return errors.New(fmt.Sprintf("Expected network ID %s, got %s",
-			peer.Info.Id, request.ReceiverId))
-	}
-
-	response.Sender = peer.Info
-	response.ReceiverId = request.Sender.Id*/
-	return nil
-}
-
 func (client *Client) StartChatting() {
-	rpc.Register(&ClientApi{client})
-
-	oldMux := http.DefaultServeMux
-	mux := http.NewServeMux()
-	http.DefaultServeMux = mux
-
-	rpc.HandleHTTP()
-
-	http.DefaultServeMux = oldMux
+	grpcServer := grpc.NewServer()
+	api.RegisterChatServer(grpcServer, client)
 
 	if l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", client.msgPort)); err == nil {
-		go http.Serve(l, nil)
+		go grpcServer.Serve(l)
 	}
 
 	go func() {
@@ -85,9 +63,7 @@ func (client *Client) StartChatting() {
 			case s := <-client.inbox:
 				println(s)
 			case s := <-client.outbox:
-				succ := client.peer.GetSuccessor()
-
-				err := client.TransferMessage(succ, s)
+				err := client.TransferMessageToSuccessor(s)
 				if err != nil {
 					logger.Error("error when transferring message: %v", err)
 				}
@@ -107,19 +83,54 @@ func (client *Client) StartRoom() {
 	client.StartChatting()
 }
 
-func (client *Client) SendMessage(s string) {
+func (client *Client) QueueMessage(s string) {
 	client.outbox <- s
 }
 
-func (client *Client) TransferMessage(info chord.ContactInfo, msg string) (err error) {
-	req := SendMessageRequest{
-		RPCHeader: RPCHeader{},
-		Owner:     client.info,
-		Message:   msg,
+func (client *Client) Call(contact *chord.ContactInfo, cb func(chatClient api.ChatClient) error) (err error) {
+	href := url.URL{}
+	err = href.UnmarshalBinary(contact.Payload) // TODO handle err
+
+	conn, err := grpc.Dial(href.Host, grpc.WithInsecure())
+	defer conn.Close()
+
+	if err != nil {
+		logger.Error("error communicating with grpc server [%s]: %v", href, err)
+		return
+	}
+	chatClient := api.NewChatClient(conn)
+	err = cb(chatClient)
+
+	return
+}
+
+func (client *Client) SendMessage(ctx context.Context, msg *api.Message) (v *api.Void, err error) {
+	v = &api.Void{}
+
+	ownerId := chord.NodeID{Val: msg.Owner.Id.Val}
+	if !ownerId.Equals(client.info.Id) {
+		client.inbox <- msg.Message
+		succ := client.peer.GetSuccessor()
+
+		err = client.Call(succ, func(chatClient api.ChatClient) error {
+			_, err = chatClient.SendMessage(context.Background(), msg)
+			return err
+		})
 	}
 
-	resp := SendMessageResponse{}
-	err = client.Call(info, "ClientApi.SendMessage", req, &resp)
+	return
+}
+
+func (client *Client) TransferMessageToSuccessor(msg string) (err error) {
+	info := client.peer.GetSuccessor()
+	err = client.Call(info, func(chatClient api.ChatClient) error {
+		_, err = chatClient.SendMessage(context.Background(), &api.Message{
+			Owner:   client.info.ToAPI(),
+			Message: msg,
+		})
+		return err
+	})
+
 	return
 }
 

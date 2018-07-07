@@ -1,0 +1,17 @@
+syntax = "proto3";
+import "github.com/lukaspj/go-chord/api/chord.proto";
+
+option go_package = "api";
+
+service Chat {
+    rpc SendMessage(Message) returns(Void) {}
+}
+
+message Message {
+    chord.ContactInfo owner = 1;
+    string message = 2;
+}
+
+message Void {
+
+}
